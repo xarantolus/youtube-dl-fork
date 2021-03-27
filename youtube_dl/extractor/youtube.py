@@ -2232,8 +2232,10 @@ class YoutubeTabIE(YoutubeBaseInfoExtractor):
 
     @classmethod
     def suitable(cls, url):
-        return False if YoutubeIE.suitable(url) else super(
-            YoutubeTabIE, cls).suitable(url)
+        if YoutubeIE.suitable(url) or YoutubeSearchURLIE.suitable(url):
+            return False
+            
+        return super(YoutubeTabIE, cls).suitable(url)
 
     def _extract_channel_id(self, webpage):
         channel_id = self._html_search_meta(
@@ -2934,11 +2936,11 @@ class YoutubeSearchDateIE(YoutubeSearchIE):
     _SEARCH_PARAMS = 'CAI%3D'
 
 
-r"""
-class YoutubeSearchURLIE(YoutubeSearchIE):
+class YoutubeSearchURLIE(YoutubeBaseInfoExtractor):
     IE_DESC = 'YouTube.com search URLs'
     IE_NAME = 'youtube:search_url'
     _VALID_URL = r'https?://(?:www\.)?youtube\.com/results\?(.*?&)?(?:search_query|q)=(?P<query>[^&]+)(?:[&]|$)'
+    _SEARCH_DATA = r'(?:window\["ytInitialData"\]|ytInitialData)\W?=\W?({.*?});'
     _TESTS = [{
         'url': 'https://www.youtube.com/results?baz=bar&search_query=youtube-dl+test+video&filters=video&lclk=video',
         'playlist_mincount': 5,
@@ -2950,12 +2952,70 @@ class YoutubeSearchURLIE(YoutubeSearchIE):
         'only_matching': True,
     }]
 
+    def _find_videos_in_json(self, extracted):
+        videos = []
+
+        def _real_find(obj):
+            if obj is None or isinstance(obj, str):
+                return
+
+            if type(obj) is list:
+                for elem in obj:
+                    _real_find(elem)
+
+            if type(obj) is dict:
+                if "videoId" in obj:
+                    videos.append(obj)
+                    return
+
+                for _, o in obj.items():
+                    _real_find(o)
+
+        _real_find(extracted)
+
+        return videos
+
+    def extract_videos_from_page_impl(self, page):
+        videos = []
+
+        search_response = self._parse_json(self._search_regex(self._SEARCH_DATA, page, 'ytInitialData'), None)
+
+        result_items = self._find_videos_in_json(search_response)
+
+        for renderer in result_items:
+            video_id = try_get(renderer, lambda x: x['videoId'])
+            video_title = try_get(renderer, lambda x: x['title']['runs'][0]['text']) or try_get(renderer, lambda x: x['title']['simpleText'])
+
+            if video_id is None or video_title is None:
+                # we do not have a videoRenderer or title extraction broke
+                continue
+
+            video_title = video_title.strip()
+
+
+            videos.append({
+                'id': video_id,
+                'title': video_title,
+            })
+
+            # try:
+            #     idx = ids_in_page.index(video_id)
+            #     if video_title and not titles_in_page[idx]:
+            #         titles_in_page[idx] = video_title
+            # except ValueError:
+            #     ids_in_page.append(video_id)
+            #     titles_in_page.append(video_title)
+        return videos
+        
+    def extract_videos_from_page(self, page):
+        return self.extract_videos_from_page_impl(page)
+        
+
     def _real_extract(self, url):
         mobj = re.match(self._VALID_URL, url)
         query = compat_urllib_parse_unquote_plus(mobj.group('query'))
         webpage = self._download_webpage(url, query)
-        return self.playlist_result(self._process_page(webpage), playlist_title=query)
-"""
+        return self.playlist_result(self.extract_videos_from_page(webpage), playlist_title=query)
 
 
 class YoutubeFeedsInfoExtractor(YoutubeTabIE):
